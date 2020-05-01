@@ -54,8 +54,7 @@ async fn main() -> Result<()> {
 
 	println!("Starting request loop...");
 
-	// TODO: change to 10 minutes
-	let mut interval = tokio::time::interval(Duration::seconds(20).to_std()?);
+	let mut interval = tokio::time::interval(Duration::minutes(10).to_std()?);
 	let client = reqwest::Client::new();
 	loop {
 		interval.tick().await;
@@ -83,7 +82,7 @@ async fn make_requests(cache: &CacheFile, config: &Config, client: &reqwest::Cli
 	try_join_all(config.folders.iter()
 		.map(|folder| make_request_and_publish(
 			&cache.access_token, &folder,
-			&config.panopto_base, &config.webhook_url, client))).await?;
+			&config.panopto_base, &config.webhook_url, client, &cache.last_updated))).await?;
 	Ok(())
 }
 
@@ -182,10 +181,11 @@ pub struct FolderDetails {
 	pub name: String,
 }
 
-async fn make_request_and_publish(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String, webhook_url: &String, client: &reqwest::Client) -> Result<()> {
-	// TODO: test time
+async fn make_request_and_publish(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String,
+								  webhook_url: &String, client: &reqwest::Client, last_query_time: &DateTime<Utc>) -> Result<()> {
 	let res = make_request(access_token, &folder_id, &panopto_base, client).await?;
 	try_join_all(res.results.into_iter()
+		.filter(|session| session.start_time.map_or(false, |t| t.gt(last_query_time)))
 		.map(|session| send_discord_message(webhook_url.clone(), panopto_base.clone(), session)))
 		.await?;
 	Ok(())
