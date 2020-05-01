@@ -28,8 +28,7 @@ async fn main() -> Result<()> {
 	let mut cache: CacheFile = read_cache()
 		.or_else(|_err| -> Result<CacheFile> {
 			let new_file = CacheFile {
-				// TODO: make this utc::now?
-				last_updated: Utc.ymd(2020, 1, 1).and_hms(0, 0, 0),
+				last_updated: Utc::now(),
 				refresh_token: config.refresh_token.clone(),
 				access_token: config.access_token.clone(),
 				access_token_expires: Utc.ymd(2020, 1, 1).and_hms(0, 0, 0),
@@ -66,24 +65,17 @@ async fn main() -> Result<()> {
 			} else {
 				// Save the file
 				let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
+				println!("Token refreshed!");
 			}
 		}
 
-		if let Err(err) = make_requests(&cache, &config, &client).await {
+		if let Err(err) = make_requests(&mut cache, &config, &client).await {
 			eprintln!("Error making requests: {:?}", err);
 		} else {
 			cache.last_updated = Utc::now();
 			let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
 		}
 	}
-}
-
-async fn make_requests(cache: &CacheFile, config: &Config, client: &reqwest::Client) -> Result<()> {
-	try_join_all(config.folders.iter()
-		.map(|folder| make_request_and_publish(
-			&cache.access_token, &folder,
-			&config.panopto_base, &config.webhook_url, client, &cache.last_updated))).await?;
-	Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,13 +173,31 @@ pub struct FolderDetails {
 	pub name: String,
 }
 
-async fn make_request_and_publish(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String,
-								  webhook_url: &String, client: &reqwest::Client, last_query_time: &DateTime<Utc>) -> Result<()> {
-	let res = make_request(access_token, &folder_id, &panopto_base, client).await?;
-	try_join_all(res.results.into_iter()
-		.filter(|session| session.start_time.map_or(false, |t| t.gt(last_query_time)))
-		.map(|session| send_discord_message(webhook_url.clone(), panopto_base.clone(), session)))
-		.await?;
+async fn make_requests(cache: &mut CacheFile, config: &Config, client: &reqwest::Client) -> Result<()> {
+	for f in &config.folders {
+		if !cache.color_map.contains_key(f) {
+			cache.color_map.insert(f.clone(), RandomColor::new().to_rgb_array());
+		}
+	}
+
+	let responses = try_join_all(config.folders.iter()
+		.map(|folder| make_request(
+			&cache.access_token, &folder,
+			&config.panopto_base, client))).await?;
+	let mut sessions: Vec<PanoptoSession> = responses.into_iter().flat_map(|res| res.results).collect();
+	// Sort oldest to newest
+	sessions.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+
+	// Send messages in order
+	for session in sessions {
+		if session.start_time.map_or(false, |t| t.gt(&cache.last_updated)) {
+			let color = cache.color_map.get(&session.folder_details.id).unwrap().clone();
+			send_discord_message(&config.webhook_url, &config.panopto_base, session, color).await?;
+			// Wait 500ms to ensure correct ordering (could use ?wait=true but might as well wait some time as well)
+			tokio::time::delay_for(Duration::milliseconds(500).to_std()?).await;
+		}
+	}
+
 	Ok(())
 }
 
@@ -236,13 +246,12 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 	}
 }
 
-async fn send_discord_message(webhook_url: String, panopto_base: String, session: PanoptoSession) -> Result<()> {
+async fn send_discord_message(webhook_url: &String, panopto_base: &String, session: PanoptoSession, color: [u32; 3]) -> Result<()> {
 	webhook::post_recording(
 		session.name,
 		session.folder_details.name,
-		webhook_url,
-		// TODO: use random color from cache
-		RandomColor::new().to_rgb_array(),
+		webhook_url.clone(),
+		color,
 		session.start_time.unwrap_or(Utc::now()),
 		session.urls.viewer_url,
 		session.urls.thumbnail_url,
