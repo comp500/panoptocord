@@ -6,7 +6,7 @@ use anyhow::{Context, format_err, Result};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use failure::Fail;
 use futures::future::try_join_all;
-use oauth2::{AsyncRefreshTokenRequest, Scope, TokenResponse};
+use oauth2::{AsyncRefreshTokenRequest, AuthType, Scope, TokenResponse};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use random_color::RandomColor;
@@ -205,11 +205,11 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 		Some(config.client_secret.clone()),
 		config.authorization_url.clone(),
 		Some(config.access_token_url.clone())
-	);
+	).set_auth_type(AuthType::RequestBody);
 
 	match client.exchange_refresh_token(&cache.refresh_token)
-		.add_scope(oauth2::Scope::new("api".to_string()))
-		.add_scope(oauth2::Scope::new("offline_access".to_string()))
+		.add_scope(Scope::new("api".to_string()))
+		.add_scope(Scope::new("offline_access".to_string()))
 		.request_async(async_http_client).await {
 		Ok(res) => {
 			cache.access_token = res.access_token().clone();
