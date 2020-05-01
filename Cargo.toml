@@ -16,6 +16,8 @@ humantime = "2.0"
 random_color = "0.4"
 futures = "0.3"
 anyhow = "1.0"
+# I should not have to import this :(
+failure = "0.1"
 
 [dependencies.serenity]
 version = "0.8.6"

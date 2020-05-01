@@ -1,12 +1,14 @@
-use std::{error, io, thread};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{format_err, Result};
+use anyhow::{Context, format_err, Result};
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use futures::executor::block_on;
+use failure::Fail;
 use futures::future::try_join_all;
+use oauth2::{AsyncRefreshTokenRequest, Scope, TokenResponse};
+use oauth2::basic::BasicClient;
+use oauth2::reqwest::async_http_client;
 use random_color::RandomColor;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +24,7 @@ async fn main() -> Result<()> {
 		Ok(serde_json::from_reader(reader)?)
 	}
 
-	let mut config: Config = serde_json::from_reader(File::open(Path::new(&config_path))?)?;
+	let config: Config = serde_json::from_reader(File::open(Path::new(&config_path))?)?;
 	let mut cache: CacheFile = read_cache()
 		.or_else(|_err| -> Result<CacheFile> {
 			let new_file = CacheFile {
@@ -46,36 +48,40 @@ async fn main() -> Result<()> {
 		cache.access_token = config.access_token.clone();
 		cache.refresh_token = config.refresh_token.clone();
 		refresh_token(&mut cache, &config).await?;
+		let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
 		println!("Token refreshed!");
 	}
-	// TODO: do this
-	// To save:
-	// let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &new_file)?;
 
 	println!("Starting request loop...");
 
+	// TODO: change to 10 minutes
 	let mut interval = tokio::time::interval(Duration::seconds(20).to_std()?);
+	let client = reqwest::Client::new();
 	loop {
 		interval.tick().await;
 		if cache.access_token_expires.lt(&Utc::now()) {
 			println!("Token expired, refreshing...");
 			if let Err(err) = refresh_token(&mut cache, &config).await {
-				eprintln!("Error refreshing access token: {}", err);
+				eprintln!("Error refreshing access token: {:?}", err);
 				let _ = webhook::post_message(config.webhook_url.clone(), "Failed to refresh access token!".to_string()).await;
+			} else {
+				// Save the file
+				let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
 			}
 		}
 
-		if let Err(err) = make_requests(&cache, &config).await {
-			eprintln!("Error making requests: {}", err);
+		if let Err(err) = make_requests(&cache, &config, &client).await {
+			eprintln!("Error making requests: {:?}", err);
 		}
 	}
 }
 
-async fn make_requests(cache: &CacheFile, config: &Config) -> Result<Vec<()>, Box<dyn error::Error>> {
-	let res = make_request().await?;
-	Ok(try_join_all(res.results.into_iter()
-		.map(|session| send_discord_message(config.webhook_url.clone(), config.panopto_base.clone(), session)))
-		.await?)
+async fn make_requests(cache: &CacheFile, config: &Config, client: &reqwest::Client) -> Result<()> {
+	try_join_all(config.folders.iter()
+		.map(|folder| make_request_and_publish(
+			&cache.access_token, &folder,
+			&config.panopto_base, &config.webhook_url, client))).await?;
+	Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,12 +179,58 @@ pub struct FolderDetails {
 	pub name: String,
 }
 
-async fn make_request() -> Result<PanoptoResponse> {
-	Err(format_err!("Not yet implemented!!"))
+async fn make_request_and_publish(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String, webhook_url: &String, client: &reqwest::Client) -> Result<()> {
+	let res = make_request(access_token, &folder_id, &panopto_base, client).await?;
+	try_join_all(res.results.into_iter()
+		.map(|session| send_discord_message(webhook_url.clone(), panopto_base.clone(), session)))
+		.await?;
+	Ok(())
+}
+
+async fn make_request(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String, client: &reqwest::Client) -> Result<PanoptoResponse> {
+	Ok(client.get(&format!("{}Panopto/api/v1/folders/{}/sessions?sortField=CreatedDate&sortOrder=Desc", panopto_base, folder_id))
+		.bearer_auth(access_token.secret())
+		.send()
+		.await?
+		.json::<PanoptoResponse>().await?)
 }
 
 async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
-	Err(format_err!("Not yet implemented!!"))
+	let client = BasicClient::new(
+		config.client_id.clone(),
+		Some(config.client_secret.clone()),
+		config.authorization_url.clone(),
+		Some(config.access_token_url.clone())
+	);
+
+	match client.exchange_refresh_token(&cache.refresh_token)
+		.add_scope(oauth2::Scope::new("api".to_string()))
+		.add_scope(oauth2::Scope::new("offline_access".to_string()))
+		.request_async(async_http_client).await {
+		Ok(res) => {
+			cache.access_token = res.access_token().clone();
+			if let Some(refresh_token) = res.refresh_token() {
+				cache.refresh_token = refresh_token.clone();
+			}
+			if let Some(expires_in) = res.expires_in() {
+				cache.access_token_expires = Utc::now() + Duration::from_std(expires_in)?;
+			}
+			cache.last_updated = Utc::now();
+			Ok(())
+		}
+		Err(err) => {
+			match err {
+				oauth2::RequestTokenError::ServerResponse(err) => {
+					let err_string = err.error_description().map(|s| s.clone())
+						.unwrap_or(format!("{:?}", err.error()));
+					Err(format_err!(err_string)).context("Returned error by server")
+				},
+				oauth2::RequestTokenError::Request(err) => Err(err.compat()).context("Failed to send/recv request"),
+				oauth2::RequestTokenError::Parse(err, _data) => Err(err).context("Failed to parse JSON response"),
+				oauth2::RequestTokenError::Other(err) => Err(format_err!(err)).context("Unexpected response")
+			}
+		}
+	}
 }
 
 async fn send_discord_message(webhook_url: String, panopto_base: String, session: PanoptoSession) -> Result<()> {
