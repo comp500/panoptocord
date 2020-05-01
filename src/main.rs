@@ -72,6 +72,9 @@ async fn main() -> Result<()> {
 
 		if let Err(err) = make_requests(&cache, &config, &client).await {
 			eprintln!("Error making requests: {:?}", err);
+		} else {
+			cache.last_updated = Utc::now();
+			let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
 		}
 	}
 }
@@ -180,6 +183,7 @@ pub struct FolderDetails {
 }
 
 async fn make_request_and_publish(access_token: &oauth2::AccessToken, folder_id: &String, panopto_base: &String, webhook_url: &String, client: &reqwest::Client) -> Result<()> {
+	// TODO: test time
 	let res = make_request(access_token, &folder_id, &panopto_base, client).await?;
 	try_join_all(res.results.into_iter()
 		.map(|session| send_discord_message(webhook_url.clone(), panopto_base.clone(), session)))
@@ -215,7 +219,6 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 			if let Some(expires_in) = res.expires_in() {
 				cache.access_token_expires = Utc::now() + Duration::from_std(expires_in)?;
 			}
-			cache.last_updated = Utc::now();
 			Ok(())
 		}
 		Err(err) => {
