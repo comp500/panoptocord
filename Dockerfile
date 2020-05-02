@@ -4,6 +4,7 @@ COPY . .
 RUN cargo install --path .
 
 FROM ubuntu:latest
+RUN apt-get update && apt-get install -y libssl1.1
 COPY --from=builder /usr/local/cargo/bin/panoptocord /usr/local/bin/panoptocord
 VOLUME /cache
 WORKDIR /cache
