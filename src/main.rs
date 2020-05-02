@@ -227,7 +227,7 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 				cache.refresh_token = refresh_token.clone();
 			}
 			if let Some(expires_in) = res.expires_in() {
-				cache.access_token_expires = Utc::now() + Duration::from_std(expires_in)?;
+				cache.access_token_expires = (Utc::now() + Duration::from_std(expires_in)?) - Duration::minutes(5);
 			}
 			Ok(())
 		}
