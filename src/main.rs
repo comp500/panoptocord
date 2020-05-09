@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 	let mut cache: CacheFile = read_cache()
 		.or_else(|_err| -> Result<CacheFile> {
 			let new_file = CacheFile {
-				last_updated: Utc::now(),
+				cached_recordings: Vec::new(),
 				refresh_token: config.refresh_token.clone(),
 				access_token: config.access_token.clone(),
 				access_token_expires: Utc.ymd(2020, 1, 1).and_hms(0, 0, 0),
@@ -72,7 +72,6 @@ async fn main() -> Result<()> {
 		if let Err(err) = make_requests(&mut cache, &config, &client).await {
 			eprintln!("Error making requests: {:?}", err);
 		} else {
-			cache.last_updated = Utc::now();
 			let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
 		}
 	}
@@ -81,7 +80,8 @@ async fn main() -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CacheFile {
-	pub last_updated: DateTime<Utc>,
+	#[serde(default)]
+	pub cached_recordings: Vec<String>,
 	pub refresh_token: oauth2::RefreshToken,
 	pub access_token: oauth2::AccessToken,
 	pub access_token_expires: DateTime<Utc>,
@@ -190,11 +190,13 @@ async fn make_requests(cache: &mut CacheFile, config: &Config, client: &reqwest:
 
 	// Send messages in order
 	for session in sessions {
-		if session.start_time.map_or(false, |t| t.gt(&cache.last_updated)) {
+		let sess_id = session.id.clone();
+		if !cache.cached_recordings.contains(&sess_id) {
 			let color = cache.color_map.get(&session.folder_details.id).unwrap().clone();
 			send_discord_message(&config.webhook_url, &config.panopto_base, session, color).await?;
-			// Wait 500ms to ensure correct ordering (could use ?wait=true but might as well wait some time as well)
-			tokio::time::delay_for(Duration::milliseconds(500).to_std()?).await;
+			// Wait 2000ms to ensure correct ordering
+			tokio::time::delay_for(Duration::milliseconds(2000).to_std()?).await;
+			cache.cached_recordings.push(sess_id)
 		}
 	}
 

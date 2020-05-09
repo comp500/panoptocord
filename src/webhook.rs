@@ -94,6 +94,7 @@ pub async fn post_message(webhook_url: String, message: String) -> Result<()> {
 
 async fn post_webhook(webhook_url: String, req: DiscordRequest) -> Result<()> {
 	let client = reqwest::Client::new();
-	client.post(&webhook_url).json(&req).send().await?;
+	let new_url = webhook_url.clone() + "?wait=true";
+	client.post(&new_url).json(&req).send().await?;
 	Ok(())
 }
