@@ -8,7 +8,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 # Workaround for qemu issue: https://github.com/uraimo/run-on-arch-action/issues/9
 RUN mkdir ~/.cargo; \
-    mount -t tmpfs -o size=2048m tmpfs ~/.cargo; \
+    sudo mount -t tmpfs -o size=2048m tmpfs ~/.cargo; \
     set -eux; \
     dpkgArch="$(dpkg --print-architecture)"; \
     case "${dpkgArch##*-}" in \
