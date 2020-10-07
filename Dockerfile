@@ -8,4 +8,4 @@ RUN apk add --no-cache libssl1.1 ca-certificates
 COPY --from=builder /usr/local/cargo/bin/panoptocord /usr/local/bin/panoptocord
 VOLUME /cache
 WORKDIR /cache
-CMD ["panoptocord"]
+ENTRYPOINT ["panoptocord"]
