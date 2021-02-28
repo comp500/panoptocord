@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
 			println!("Token expired, refreshing...");
 			if let Err(err) = refresh_token(&mut cache, &config).await {
 				eprintln!("Error refreshing access token: {:?}", err);
-				let _ = webhook::post_message(config.webhook_url.clone(), "Failed to refresh access token!".to_string()).await;
+				let _ = webhook::post_message(config.webhook_error_url.clone(), "Failed to refresh access token!".to_string()).await;
 			} else {
 				// Save the file
 				let _ = serde_json::to_writer_pretty(File::create(Path::new("panoptocord-cache.json"))?, &cache)?;
@@ -101,7 +101,10 @@ struct Config {
 	pub access_token: oauth2::AccessToken,
 	pub folders: Vec<String>,
 	pub webhook_url: String,
-	pub panopto_base: String
+	pub webhook_error_url: String,
+	pub panopto_base: String,
+	// Allows filtering with a start date, to stop duplicate messages with an incomplete cache
+	pub filter_since_date: Option<DateTime<Utc>>
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +194,11 @@ async fn make_requests(cache: &mut CacheFile, config: &Config, client: &reqwest:
 	// Send messages in order
 	for session in sessions {
 		let sess_id = session.id.clone();
+		if let (Some(filter_since_date), Some(start_time)) = (config.filter_since_date, session.start_time) {
+			if start_time < filter_since_date {
+				continue;
+			}
+		}
 		if !cache.cached_recordings.contains(&sess_id) {
 			let color = cache.color_map.get(&session.folder_details.id).unwrap().clone();
 			send_discord_message(&config.webhook_url, &config.panopto_base, session, color).await?;
