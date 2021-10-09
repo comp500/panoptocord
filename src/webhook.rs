@@ -52,7 +52,7 @@ struct Field {
 }
 
 
-pub async fn post_recording(name: String, folder_name: String, webhook_url: String, color: [u32; 3],
+pub async fn post_recording(name: String, folder_name: String, webhook_url: String, color: u32,
 					  start_time: DateTime<Utc>, viewer_url: String, image_url: String,
 					  folder_url: String, duration: Duration, description: Option<String>) -> Result<()> {
 	post_webhook(webhook_url, DiscordRequest {
@@ -61,7 +61,7 @@ pub async fn post_recording(name: String, folder_name: String, webhook_url: Stri
 				title: name,
 				description,
 				url: viewer_url,
-				color: serenity::utils::Color::from_rgb(color[0] as u8, color[1] as u8, color[2] as u8).0,
+				color,
 				timestamp: start_time,
 				footer: Footer {
 					text: "panoptocord".to_string()

@@ -4,9 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, format_err, Result};
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use failure::Fail;
 use futures::future::try_join_all;
-use oauth2::{AsyncRefreshTokenRequest, AuthType, Scope, TokenResponse};
+use oauth2::{AuthType, Scope, TokenResponse};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use random_color::RandomColor;
@@ -85,7 +84,7 @@ struct CacheFile {
 	pub refresh_token: oauth2::RefreshToken,
 	pub access_token: oauth2::AccessToken,
 	pub access_token_expires: DateTime<Utc>,
-	pub color_map: HashMap<String, [u32; 3]>,
+	pub color_map: HashMap<String, u32>,
 	pub last_changed_refresh_token: oauth2::RefreshToken,
 	pub last_changed_access_token: oauth2::AccessToken,
 }
@@ -179,7 +178,8 @@ pub struct FolderDetails {
 async fn make_requests(cache: &mut CacheFile, config: &Config, client: &reqwest::Client) -> Result<()> {
 	for f in &config.folders {
 		if !cache.color_map.contains_key(f) {
-			cache.color_map.insert(f.clone(), RandomColor::new().to_rgb_array());
+			let color = RandomColor::new().to_rgb_array();
+			cache.color_map.insert(f.clone(), (color[0] as u32) << 16 | (color[1] as u32) << 8 | (color[2] as u32));
 		}
 	}
 
@@ -203,7 +203,7 @@ async fn make_requests(cache: &mut CacheFile, config: &Config, client: &reqwest:
 			let color = cache.color_map.get(&session.folder_details.id).unwrap().clone();
 			send_discord_message(&config.webhook_url, &config.panopto_base, session, color).await?;
 			// Wait 2000ms to ensure correct ordering
-			tokio::time::delay_for(Duration::milliseconds(2000).to_std()?).await;
+			tokio::time::sleep(Duration::milliseconds(2000).to_std()?).await;
 			cache.cached_recordings.push(sess_id)
 		}
 	}
@@ -248,7 +248,7 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 						.unwrap_or(format!("{:?}", err.error()));
 					Err(format_err!(err_string)).context("Returned error by server")
 				},
-				oauth2::RequestTokenError::Request(err) => Err(err.compat()).context("Failed to send/recv request"),
+				oauth2::RequestTokenError::Request(err) => Err(err).context("Failed to send/recv request"),
 				oauth2::RequestTokenError::Parse(err, _data) => Err(err).context("Failed to parse JSON response"),
 				oauth2::RequestTokenError::Other(err) => Err(format_err!(err)).context("Unexpected response")
 			}
@@ -256,7 +256,7 @@ async fn refresh_token(cache: &mut CacheFile, config: &Config) -> Result<()> {
 	}
 }
 
-async fn send_discord_message(webhook_url: &String, panopto_base: &String, session: PanoptoSession, color: [u32; 3]) -> Result<()> {
+async fn send_discord_message(webhook_url: &String, panopto_base: &String, session: PanoptoSession, color: u32) -> Result<()> {
 	webhook::post_recording(
 		session.name,
 		session.folder_details.name,
